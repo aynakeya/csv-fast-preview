@@ -1,0 +1,18 @@
+/target/
+
+# Local editor and agent state
+/.idea/
+/.agents/
+/.codex/
+
+# Generated benchmark data and reports
+/data-large.csv
+/wide_long_headers_5gb.csv
+/wide_long_headers_5gb_benchmark.txt
+/wide_long_headers_5gb_benchmark_fastopen.txt
+/csvfastview-export.csv
+
+# OS/editor noise
+.DS_Store
+*~
+*.swp

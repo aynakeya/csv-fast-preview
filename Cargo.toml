@@ -1,0 +1,13 @@
+[package]
+name = "csvfastview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+csv = "1.3"
+eframe = { version = "0.31", default-features = true }
+egui_extras = { version = "0.31", features = ["default"] }
+serde = { version = "1", features = ["derive"] }
+encoding_rs = "0.8"
