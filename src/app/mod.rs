@@ -1,5 +1,6 @@
 mod constants;
 mod events;
+mod fonts;
 mod format;
 mod state;
 mod ui;
@@ -11,6 +12,9 @@ pub fn run() -> eframe::Result<()> {
     eframe::run_native(
         "CSV Fast View",
         options,
-        Box::new(|_cc| Ok(Box::<CsvFastViewApp>::default())),
+        Box::new(|cc| {
+            fonts::install_cjk_fallback(&cc.egui_ctx);
+            Ok(Box::<CsvFastViewApp>::default())
+        }),
     )
 }

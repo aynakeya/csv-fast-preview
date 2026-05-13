@@ -13,10 +13,27 @@ impl eframe::App for CsvFastViewApp {
             self.apply_event(evt);
         }
 
+        if let Some(path) = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .find_map(|file| file.path.clone())
+        }) {
+            self.open_path(path);
+        }
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("File");
                 ui.add(TextEdit::singleline(&mut self.path).desired_width(440.0));
+                if ui.button("Browse").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("CSV/Text", &["csv", "tsv", "txt"])
+                        .pick_file()
+                    {
+                        self.open_path(path);
+                    }
+                }
 
                 ui.label("Delimiter");
                 ui.add(TextEdit::singleline(&mut self.delimiter).desired_width(24.0));
@@ -61,17 +78,7 @@ impl eframe::App for CsvFastViewApp {
                 }
 
                 if ui.button("Open").clicked() {
-                    let cfg = self.parse_config();
-                    if let Ok(meta) = std::fs::metadata(&self.path) {
-                        self.file_size_text = format!("{} bytes", meta.len());
-                    }
-                    self.status = "Indexing in background...".to_string();
-                    self.indexing = true;
-                    self.index_progress = None;
-                    let _ = self.worker.tx.send(Job::OpenFile {
-                        path: self.path.clone(),
-                        config: cfg,
-                    });
+                    self.open_current_file();
                 }
             });
 

@@ -1,6 +1,7 @@
 use crate::core::{CsvConfig, CsvEncoding, FilterMode};
 use crate::worker::{Job, Worker};
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 
 use super::constants::{ROW_CACHE_LIMIT, ROW_PREFETCH_COUNT};
 
@@ -99,6 +100,26 @@ impl CsvFastViewApp {
             flexible: self.flexible,
             encoding: self.encoding,
         }
+    }
+
+    pub(super) fn open_path(&mut self, path: PathBuf) {
+        self.path = path.display().to_string();
+        self.open_current_file();
+    }
+
+    pub(super) fn open_current_file(&mut self) {
+        let cfg = self.parse_config();
+        self.file_size_text = std::fs::metadata(&self.path)
+            .map(|meta| format!("{} bytes", meta.len()))
+            .unwrap_or_else(|_| "-".to_string());
+        self.status = "Indexing in background...".to_string();
+        self.indexing = true;
+        self.index_progress = None;
+        self.clear_rows();
+        let _ = self.worker.tx.send(Job::OpenFile {
+            path: self.path.clone(),
+            config: cfg,
+        });
     }
 
     pub(super) fn clear_rows(&mut self) {

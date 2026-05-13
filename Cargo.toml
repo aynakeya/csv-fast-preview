@@ -11,3 +11,4 @@ eframe = { version = "0.31", default-features = true }
 egui_extras = { version = "0.31", features = ["default"] }
 serde = { version = "1", features = ["derive"] }
 encoding_rs = "0.8"
+rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
