@@ -355,6 +355,7 @@ impl eframe::App for CsvFastViewApp {
                             body.rows(TABLE_ROW_HEIGHT, self.logical_rows.len(), |mut row| {
                                 let row_index = row.index();
                                 self.page_start = row_index;
+                                let row_loaded = self.row_cache.contains_key(&row_index);
                                 let row_data = self.read_cached_row(row_index);
                                 row.col(|ui| {
                                     ui.add(
@@ -363,18 +364,25 @@ impl eframe::App for CsvFastViewApp {
                                 });
                                 for col_idx in &visible {
                                     row.col(|ui| {
-                                        let val =
-                                            row_data.get(*col_idx).cloned().unwrap_or_default();
-                                        let shown = truncate_cell_text(&val);
-                                        let resp = ui
-                                            .add(
-                                                egui::Label::new(shown)
-                                                    .truncate()
-                                                    .sense(egui::Sense::click()),
-                                            )
-                                            .on_hover_text(&val);
-                                        if resp.clicked() {
-                                            self.selected_cell = Some(val);
+                                        if row_loaded {
+                                            let val =
+                                                row_data.get(*col_idx).cloned().unwrap_or_default();
+                                            let shown = truncate_cell_text(&val);
+                                            let resp = ui
+                                                .add(
+                                                    egui::Label::new(shown)
+                                                        .truncate()
+                                                        .sense(egui::Sense::click()),
+                                                )
+                                                .on_hover_text(&val);
+                                            if resp.clicked() {
+                                                self.selected_cell = Some(val);
+                                            }
+                                        } else {
+                                            ui.add(
+                                                egui::Label::new(RichText::new("...").weak())
+                                                    .truncate(),
+                                            );
                                         }
                                     });
                                 }

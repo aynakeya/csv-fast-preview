@@ -1,5 +1,6 @@
 use crate::core::{CsvIndex, FilterMode};
 use crossbeam_channel::{Receiver, Sender};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -20,8 +21,16 @@ pub(super) fn run_worker(
     let current: SharedIndex = Arc::new(Mutex::new(None));
     let open_epoch = Arc::new(AtomicU64::new(0));
     let mut row_cache = RowCache::new();
+    let mut pending_jobs = VecDeque::new();
 
-    while let Ok(job) = job_rx.recv() {
+    loop {
+        let job = match pending_jobs.pop_front() {
+            Some(job) => job,
+            None => match job_rx.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            },
+        };
         match job {
             Job::OpenFile { path, config } => {
                 row_cache.clear();
@@ -40,13 +49,10 @@ pub(super) fn run_worker(
                 ));
 
                 let total_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let started = CsvIndex::preview(&path, config.clone(), 1)
-                    .map(|mut index| {
-                        index.row_offsets.clear();
-                        *current.lock().expect("current index lock") = Some(index.clone());
-                        (CsvSnapshot::from(&index), total_bytes)
-                    })
-                    .map_err(|e| e.to_string());
+                let started = preview
+                    .as_ref()
+                    .map(|index| (CsvSnapshot::from(index), total_bytes))
+                    .map_err(Clone::clone);
                 let _ = evt_tx.send(Event::IndexStarted(started));
 
                 spawn_indexer(
@@ -69,6 +75,8 @@ pub(super) fn run_worker(
                 start,
                 rows,
             } => {
+                let (request_id, start, rows) =
+                    latest_read_rows_job(request_id, start, rows, &mut pending_jobs, &job_rx);
                 handle_read_rows(&current, &evt_tx, &mut row_cache, request_id, start, rows);
             }
             Job::ExportRows {
@@ -80,6 +88,46 @@ pub(super) fn run_worker(
             }
         }
     }
+}
+
+fn latest_read_rows_job(
+    request_id: u64,
+    start: usize,
+    rows: Vec<usize>,
+    pending_jobs: &mut VecDeque<Job>,
+    job_rx: &Receiver<Job>,
+) -> (u64, usize, Vec<usize>) {
+    let mut latest = (request_id, start, rows);
+
+    while matches!(pending_jobs.front(), Some(Job::ReadRows { .. })) {
+        let Some(Job::ReadRows {
+            request_id,
+            start,
+            rows,
+        }) = pending_jobs.pop_front()
+        else {
+            unreachable!();
+        };
+        latest = (request_id, start, rows);
+    }
+
+    while let Ok(job) = job_rx.try_recv() {
+        match job {
+            Job::ReadRows {
+                request_id,
+                start,
+                rows,
+            } => {
+                latest = (request_id, start, rows);
+            }
+            other => {
+                pending_jobs.push_back(other);
+                break;
+            }
+        }
+    }
+
+    latest
 }
 
 fn spawn_indexer(
@@ -106,7 +154,11 @@ fn spawn_indexer(
                     .expect("current index lock")
                     .as_mut()
                 {
-                    index.row_offsets.extend(offsets);
+                    if indexed_rows == offsets.len() {
+                        index.row_offsets = offsets;
+                    } else {
+                        index.row_offsets.extend(offsets);
+                    }
                 }
                 let _ = tx.send(Event::IndexProgress {
                     indexed_rows,
@@ -200,36 +252,52 @@ fn handle_read_rows(
         return;
     };
 
-    let mut out = Vec::new();
+    let mut cached = Vec::new();
     let mut missing = Vec::new();
     let mut missing_positions = Vec::new();
     for (offset, real_row) in rows.iter().copied().enumerate() {
         if let Some(row) = row_cache.get(real_row) {
-            out.push((start + offset, row.clone()));
+            cached.push((start + offset, row.clone()));
         } else {
             missing.push(real_row);
             missing_positions.push(start + offset);
         }
     }
 
-    if !missing.is_empty() {
-        if let Ok(loaded) = index.read_page(&missing, 0, missing.len()) {
-            for ((logical_idx, real_row), row) in missing_positions
-                .into_iter()
-                .zip(missing.into_iter())
-                .zip(loaded.into_iter())
-            {
-                row_cache.insert(real_row, row.clone());
-                out.push((logical_idx, row));
-            }
-        }
+    send_rows_read(evt_tx, request_id, start, &mut cached);
+
+    if missing.is_empty() {
+        return;
     }
 
-    out.sort_by_key(|(logical_idx, _)| *logical_idx);
+    let mut loaded = Vec::new();
+    if let Ok(rows) = index.read_page(&missing, 0, missing.len()) {
+        for ((logical_idx, real_row), row) in missing_positions
+            .into_iter()
+            .zip(missing.into_iter())
+            .zip(rows.into_iter())
+        {
+            row_cache.insert(real_row, row.clone());
+            loaded.push((logical_idx, row));
+        }
+    }
+    send_rows_read(evt_tx, request_id, start, &mut loaded);
+}
+
+fn send_rows_read(
+    evt_tx: &Sender<Event>,
+    request_id: u64,
+    start: usize,
+    rows: &mut Vec<(usize, Vec<String>)>,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    rows.sort_by_key(|(logical_idx, _)| *logical_idx);
     let _ = evt_tx.send(Event::RowsRead {
         request_id,
         start,
-        rows: out,
+        rows: std::mem::take(rows),
     });
 }
 

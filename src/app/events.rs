@@ -26,14 +26,19 @@ impl CsvFastViewApp {
             },
             Event::IndexStarted(result) => match result {
                 Ok((snapshot, total_bytes)) => {
-                    self.status = "Indexing... 0 rows".to_string();
+                    let visible_rows = self.total_rows.max(snapshot.row_count);
+                    self.status = format!("Indexing... {visible_rows} rows");
                     self.apply_headers(snapshot.headers);
-                    self.total_rows = 0;
-                    self.logical_rows.clear();
-                    self.page_start = 0;
-                    self.jump_to = 0;
+                    self.total_rows = visible_rows;
+                    if self.logical_rows.len() < visible_rows {
+                        self.logical_rows
+                            .extend(self.logical_rows.len()..visible_rows);
+                    }
+                    self.page_start = self
+                        .page_start
+                        .min(self.logical_rows.len().saturating_sub(1));
+                    self.jump_to = self.page_start;
                     self.search_results.clear();
-                    self.clear_rows();
                     self.indexing = true;
                     self.index_progress = Some((0, 0, total_bytes));
                 }
@@ -83,7 +88,6 @@ impl CsvFastViewApp {
                     self.page_start = 0;
                     self.jump_to = 0;
                     self.search_results.clear();
-                    self.clear_rows();
                     self.indexing = false;
                     self.index_progress = None;
                 }
