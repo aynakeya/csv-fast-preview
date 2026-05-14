@@ -12,6 +12,8 @@
 /wide_long_headers_5gb_benchmark_fastopen.txt
 /csvfastview-export.csv
 
+Cargo.lock
+
 # OS/editor noise
 .DS_Store
 *~
