@@ -70,14 +70,10 @@ pub(super) fn run_worker(
             Job::Search { keyword } => {
                 handle_search(&current, &evt_tx, &cancel_search, keyword);
             }
-            Job::ReadRows {
-                request_id,
-                start,
-                rows,
-            } => {
-                let (request_id, start, rows) =
-                    latest_read_rows_job(request_id, start, rows, &mut pending_jobs, &job_rx);
-                handle_read_rows(&current, &evt_tx, &mut row_cache, request_id, start, rows);
+            Job::ReadRows { request_id, rows } => {
+                let (request_id, rows) =
+                    latest_read_rows_job(request_id, rows, &mut pending_jobs, &job_rx);
+                handle_read_rows(&current, &evt_tx, &mut row_cache, request_id, rows);
             }
             Job::ExportRows {
                 path,
@@ -92,33 +88,23 @@ pub(super) fn run_worker(
 
 fn latest_read_rows_job(
     request_id: u64,
-    start: usize,
-    rows: Vec<usize>,
+    rows: Vec<(usize, usize)>,
     pending_jobs: &mut VecDeque<Job>,
     job_rx: &Receiver<Job>,
-) -> (u64, usize, Vec<usize>) {
-    let mut latest = (request_id, start, rows);
+) -> (u64, Vec<(usize, usize)>) {
+    let mut latest = (request_id, rows);
 
     while matches!(pending_jobs.front(), Some(Job::ReadRows { .. })) {
-        let Some(Job::ReadRows {
-            request_id,
-            start,
-            rows,
-        }) = pending_jobs.pop_front()
-        else {
+        let Some(Job::ReadRows { request_id, rows }) = pending_jobs.pop_front() else {
             unreachable!();
         };
-        latest = (request_id, start, rows);
+        latest = (request_id, rows);
     }
 
     while let Ok(job) = job_rx.try_recv() {
         match job {
-            Job::ReadRows {
-                request_id,
-                start,
-                rows,
-            } => {
-                latest = (request_id, start, rows);
+            Job::ReadRows { request_id, rows } => {
+                latest = (request_id, rows);
             }
             other => {
                 pending_jobs.push_back(other);
@@ -240,63 +226,55 @@ fn handle_read_rows(
     evt_tx: &Sender<Event>,
     row_cache: &mut RowCache,
     request_id: u64,
-    start: usize,
-    rows: Vec<usize>,
+    rows: Vec<(usize, usize)>,
 ) {
     let Some(index) = current.lock().expect("current index lock").clone() else {
         let _ = evt_tx.send(Event::RowsRead {
             request_id,
-            start,
             rows: Vec::new(),
         });
         return;
     };
 
     let mut cached = Vec::new();
-    let mut missing = Vec::new();
-    let mut missing_positions = Vec::new();
-    for (offset, real_row) in rows.iter().copied().enumerate() {
+    let mut missing_logical = Vec::new();
+    let mut missing_real = Vec::new();
+    for (logical_idx, real_row) in rows.iter().copied() {
         if let Some(row) = row_cache.get(real_row) {
-            cached.push((start + offset, row.clone()));
+            cached.push((logical_idx, row.clone()));
         } else {
-            missing.push(real_row);
-            missing_positions.push(start + offset);
+            missing_logical.push(logical_idx);
+            missing_real.push(real_row);
         }
     }
 
-    send_rows_read(evt_tx, request_id, start, &mut cached);
+    send_rows_read(evt_tx, request_id, &mut cached);
 
-    if missing.is_empty() {
+    if missing_real.is_empty() {
         return;
     }
 
     let mut loaded = Vec::new();
-    if let Ok(rows) = index.read_page(&missing, 0, missing.len()) {
-        for ((logical_idx, real_row), row) in missing_positions
+    if let Ok(rows) = index.read_page(&missing_real, 0, missing_real.len()) {
+        for ((logical_idx, real_row), row) in missing_logical
             .into_iter()
-            .zip(missing.into_iter())
+            .zip(missing_real.into_iter())
             .zip(rows.into_iter())
         {
             row_cache.insert(real_row, row.clone());
             loaded.push((logical_idx, row));
         }
     }
-    send_rows_read(evt_tx, request_id, start, &mut loaded);
+    send_rows_read(evt_tx, request_id, &mut loaded);
 }
 
-fn send_rows_read(
-    evt_tx: &Sender<Event>,
-    request_id: u64,
-    start: usize,
-    rows: &mut Vec<(usize, Vec<String>)>,
-) {
+fn send_rows_read(evt_tx: &Sender<Event>, request_id: u64, rows: &mut Vec<(usize, Vec<String>)>) {
     if rows.is_empty() {
         return;
     }
     rows.sort_by_key(|(logical_idx, _)| *logical_idx);
     let _ = evt_tx.send(Event::RowsRead {
         request_id,
-        start,
         rows: std::mem::take(rows),
     });
 }

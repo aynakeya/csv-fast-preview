@@ -162,12 +162,8 @@ impl CsvFastViewApp {
                 self.search_progress = None;
                 self.status = "Search cancelled".to_string();
             }
-            Event::RowsRead {
-                request_id,
-                start: _,
-                rows,
-            } => {
-                if request_id == self.row_request_id {
+            Event::RowsRead { request_id, rows } => {
+                if request_id >= self.row_request_floor {
                     for (logical_idx, row) in rows {
                         self.insert_loaded_row(logical_idx, row);
                     }

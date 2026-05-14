@@ -132,7 +132,7 @@ cargo run --bin bench -- /path/to/large.csv , utf8 0 keyword
 ## 大文件行为说明
 
 - 内存中主要保存行 byte offset，而不是完整表格。
-- GUI 层只缓存 worker 返回的少量显示行。
+- GUI 层按当前位置维护有限行内容缓存，默认缓存当前位置上方约 2500 行、下方约 4500 行，最大约 8000 行。
 - worker 层有独立行缓存，用于减少快速滚动时的重复 seek/read。
 - indexing 期间会持续更新已索引行数，已索引出的行可以被 GUI 请求显示。
 - 快速拖动到远处时，worker 会合并过时的读行请求，优先处理最新位置，避免后台堆积无效读取。

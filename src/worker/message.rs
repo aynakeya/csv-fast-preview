@@ -17,8 +17,7 @@ pub enum Job {
     },
     ReadRows {
         request_id: u64,
-        start: usize,
-        rows: Vec<usize>,
+        rows: Vec<(usize, usize)>,
     },
     ExportRows {
         path: String,
@@ -38,7 +37,6 @@ pub enum Event {
     Opened(Result<CsvSnapshot, String>),
     RowsRead {
         request_id: u64,
-        start: usize,
         rows: Vec<(usize, Vec<String>)>,
     },
     Exported(Result<String, String>),

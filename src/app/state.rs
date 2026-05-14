@@ -3,7 +3,7 @@ use crate::worker::{Job, Worker};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use super::constants::{ROW_CACHE_LIMIT, ROW_PREFETCH_COUNT};
+use super::constants::{ROW_CACHE_AFTER, ROW_CACHE_BEFORE, ROW_CACHE_LIMIT};
 
 pub(crate) struct CsvFastViewApp {
     pub(super) worker: Worker,
@@ -26,6 +26,7 @@ pub(crate) struct CsvFastViewApp {
     pub(super) row_cache: HashMap<usize, Vec<String>>,
     pub(super) row_cache_order: VecDeque<usize>,
     pub(super) row_request_id: u64,
+    pub(super) row_request_floor: u64,
     pub(super) requested_range: Option<(usize, usize)>,
     pub(super) scroll_to_row: Option<usize>,
 
@@ -68,6 +69,7 @@ impl Default for CsvFastViewApp {
             row_cache: HashMap::new(),
             row_cache_order: VecDeque::new(),
             row_request_id: 0,
+            row_request_floor: 0,
             requested_range: None,
             scroll_to_row: None,
             visible_columns: Vec::new(),
@@ -126,6 +128,7 @@ impl CsvFastViewApp {
         self.row_cache.clear();
         self.row_cache_order.clear();
         self.row_request_id = self.row_request_id.wrapping_add(1);
+        self.row_request_floor = self.row_request_id;
         self.requested_range = None;
     }
 
@@ -142,19 +145,39 @@ impl CsvFastViewApp {
             .requested_range
             .is_some_and(|(start, end)| (start..end).contains(&logical_idx))
         {
-            let prefetch_len =
-                ROW_PREFETCH_COUNT.min(self.logical_rows.len().saturating_sub(logical_idx));
-            let rows = self.logical_rows[logical_idx..logical_idx + prefetch_len].to_vec();
+            let (start, end) = self.cache_window_for(logical_idx);
+            let rows = self.cache_window_rows(logical_idx, start, end);
             self.row_request_id = self.row_request_id.wrapping_add(1);
-            self.requested_range = Some((logical_idx, logical_idx + prefetch_len));
+            self.requested_range = Some((start, end));
             let _ = self.worker.tx.send(Job::ReadRows {
                 request_id: self.row_request_id,
-                start: logical_idx,
                 rows,
             });
         }
 
         Vec::new()
+    }
+
+    fn cache_window_for(&self, logical_idx: usize) -> (usize, usize) {
+        let start = logical_idx.saturating_sub(ROW_CACHE_BEFORE);
+        let end = (logical_idx + ROW_CACHE_AFTER + 1).min(self.logical_rows.len());
+        (start, end)
+    }
+
+    fn cache_window_rows(
+        &self,
+        logical_idx: usize,
+        start: usize,
+        end: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut rows = Vec::with_capacity(end.saturating_sub(start));
+        for idx in logical_idx..end {
+            rows.push((idx, self.logical_rows[idx]));
+        }
+        for idx in (start..logical_idx).rev() {
+            rows.push((idx, self.logical_rows[idx]));
+        }
+        rows
     }
 
     pub(super) fn insert_loaded_row(&mut self, logical_idx: usize, row: Vec<String>) {

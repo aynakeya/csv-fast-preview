@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-const WORKER_ROW_CACHE_LIMIT: usize = 8_000;
+const WORKER_ROW_CACHE_LIMIT: usize = 8096;
 
 pub(super) struct RowCache {
     rows: HashMap<usize, Vec<String>>,
