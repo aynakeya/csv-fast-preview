@@ -39,6 +39,9 @@ pub enum Event {
         request_id: u64,
         rows: Vec<(usize, Vec<String>)>,
     },
+    RowsReadDone {
+        request_id: u64,
+    },
     Exported(Result<String, String>),
     Filtered(Result<Vec<usize>, String>),
     FilterProgress {

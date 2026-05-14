@@ -169,6 +169,11 @@ impl CsvFastViewApp {
                     }
                 }
             }
+            Event::RowsReadDone { request_id } => {
+                if request_id == self.row_request_id {
+                    self.requested_range = None;
+                }
+            }
             Event::Exported(result) => match result {
                 Ok(path) => self.status = format!("Exported: {path}"),
                 Err(err) => self.status = format!("Export failed: {err}"),

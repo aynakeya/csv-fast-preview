@@ -134,13 +134,10 @@ impl CsvFastViewApp {
         self.requested_range = None;
     }
 
-    pub(super) fn read_cached_row(&mut self, logical_idx: usize) -> Vec<String> {
-        if let Some(row) = self.row_cache.get(&logical_idx) {
-            return row.clone();
-        }
-
-        if self.logical_rows.get(logical_idx).is_none() {
-            return Vec::new();
+    pub(super) fn request_cached_row(&mut self, logical_idx: usize) {
+        if self.row_cache.contains_key(&logical_idx) || self.logical_rows.get(logical_idx).is_none()
+        {
+            return;
         }
 
         if !self
@@ -156,8 +153,6 @@ impl CsvFastViewApp {
                 rows,
             });
         }
-
-        Vec::new()
     }
 
     fn cache_window_for(&self, logical_idx: usize) -> (usize, usize) {

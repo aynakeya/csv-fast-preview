@@ -73,6 +73,12 @@ src/
 cargo run
 ```
 
+Windows 上建议优先使用 release 构建测试性能：
+
+```bash
+cargo run --release
+```
+
 也可以启动时直接传入文件路径：
 
 ```bash
@@ -92,6 +98,12 @@ cargo run -- /path/to/file.csv
 
 ```bash
 CSVFASTVIEW_FONT=/path/to/NotoSansCJK-Regular.ttc cargo run
+```
+
+高 DPI 屏幕上如果 Windows 渲染明显卡顿，可以临时测试固定缩放：
+
+```bash
+CSVFASTVIEW_PIXELS_PER_POINT=1.0 cargo run --release
 ```
 
 浏览：

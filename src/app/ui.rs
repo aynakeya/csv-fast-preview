@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText, ScrollArea, TextEdit};
 use egui_extras::{Column, TableBuilder};
 
 use super::constants::{CURRENT_VIEW_EXPORT_ROWS, TABLE_HEADER_HEIGHT, TABLE_ROW_HEIGHT};
-use super::format::{truncate_cell_text, wrap_header_text};
+use super::format::wrap_header_text;
 use super::state::CsvFastViewApp;
 
 impl eframe::App for CsvFastViewApp {
@@ -23,7 +23,9 @@ impl eframe::App for CsvFastViewApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut had_worker_event = false;
         while let Ok(evt) = self.worker.rx.try_recv() {
+            had_worker_event = true;
             self.apply_event(evt);
         }
 
@@ -294,8 +296,6 @@ impl eframe::App for CsvFastViewApp {
                 ui.label("Open a CSV file to start preview.");
                 return;
             }
-            let headers = self.headers.clone();
-
             let visible: Vec<usize> = self
                 .visible_columns
                 .iter()
@@ -339,6 +339,9 @@ impl eframe::App for CsvFastViewApp {
                         table = table.scroll_to_row(row, Some(egui::Align::TOP));
                     }
 
+                    let headers = &self.headers;
+                    let mut selected_cell = None;
+
                     table
                         .header(TABLE_HEADER_HEIGHT, |mut header| {
                             header.col(|ui| {
@@ -374,8 +377,8 @@ impl eframe::App for CsvFastViewApp {
                             body.rows(TABLE_ROW_HEIGHT, self.logical_rows.len(), |mut row| {
                                 let row_index = row.index();
                                 self.page_start = row_index;
-                                let row_loaded = self.row_cache.contains_key(&row_index);
-                                let row_data = self.read_cached_row(row_index);
+                                self.request_cached_row(row_index);
+                                let row_data = self.row_cache.get(&row_index);
                                 row.col(|ui| {
                                     ui.add(
                                         egui::Label::new((row_index + 1).to_string()).truncate(),
@@ -383,19 +386,21 @@ impl eframe::App for CsvFastViewApp {
                                 });
                                 for col_idx in &visible {
                                     row.col(|ui| {
-                                        if row_loaded {
-                                            let val =
-                                                row_data.get(*col_idx).cloned().unwrap_or_default();
-                                            let shown = truncate_cell_text(&val);
-                                            let resp = ui
-                                                .add(
-                                                    egui::Label::new(shown)
-                                                        .truncate()
-                                                        .sense(egui::Sense::click()),
-                                                )
-                                                .on_hover_text(&val);
+                                        if let Some(row_data) = row_data {
+                                            let val = row_data
+                                                .get(*col_idx)
+                                                .map(String::as_str)
+                                                .unwrap_or("");
+                                            let resp = ui.add(
+                                                egui::Label::new(val)
+                                                    .truncate()
+                                                    .sense(egui::Sense::click()),
+                                            );
+                                            if resp.hovered() {
+                                                resp.clone().on_hover_text(val);
+                                            }
                                             if resp.clicked() {
-                                                self.selected_cell = Some(val);
+                                                selected_cell = Some(val.to_string());
                                             }
                                         } else {
                                             ui.add(
@@ -412,6 +417,9 @@ impl eframe::App for CsvFastViewApp {
                                 }
                             });
                         });
+                    if selected_cell.is_some() {
+                        self.selected_cell = selected_cell;
+                    }
                 });
         });
 
@@ -442,6 +450,15 @@ impl eframe::App for CsvFastViewApp {
                 });
         }
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        if self.indexing
+            || self.filtering
+            || self.searching
+            || self.requested_range.is_some()
+            || has_hovered_file
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        } else if had_worker_event {
+            ctx.request_repaint();
+        }
     }
 }

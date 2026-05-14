@@ -2,10 +2,6 @@ pub(super) fn wrap_header_text(text: &str) -> String {
     text.to_string()
 }
 
-pub(super) fn truncate_cell_text(text: &str) -> String {
-    text.to_string()
-}
-
 pub(super) fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;

@@ -269,6 +269,7 @@ fn handle_read_rows(
             request_id,
             rows: Vec::new(),
         });
+        send_rows_read_done(evt_tx, request_id);
         return;
     };
 
@@ -287,6 +288,7 @@ fn handle_read_rows(
     send_rows_read(evt_tx, request_id, &mut cached);
 
     if missing_real.is_empty() {
+        send_rows_read_done(evt_tx, request_id);
         return;
     }
 
@@ -309,9 +311,11 @@ fn handle_read_rows(
         send_rows_read(evt_tx, request_id, &mut loaded);
         if let Some(job) = interrupting_read_rows_job(pending_jobs, job_rx) {
             pending_jobs.push_front(job);
+            send_rows_read_done(evt_tx, request_id);
             return;
         }
     }
+    send_rows_read_done(evt_tx, request_id);
 }
 
 fn send_rows_read(evt_tx: &Sender<Event>, request_id: u64, rows: &mut Vec<(usize, Vec<String>)>) {
@@ -323,6 +327,10 @@ fn send_rows_read(evt_tx: &Sender<Event>, request_id: u64, rows: &mut Vec<(usize
         request_id,
         rows: std::mem::take(rows),
     });
+}
+
+fn send_rows_read_done(evt_tx: &Sender<Event>, request_id: u64) {
+    let _ = evt_tx.send(Event::RowsReadDone { request_id });
 }
 
 fn handle_export_rows(
