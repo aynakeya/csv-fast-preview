@@ -11,6 +11,7 @@ use super::row_cache::RowCache;
 use super::snapshot::CsvSnapshot;
 
 type SharedIndex = Arc<Mutex<Option<CsvIndex>>>;
+const ROW_READ_CHUNK_SIZE: usize = 128;
 
 pub(super) fn run_worker(
     job_rx: Receiver<Job>,
@@ -73,7 +74,15 @@ pub(super) fn run_worker(
             Job::ReadRows { request_id, rows } => {
                 let (request_id, rows) =
                     latest_read_rows_job(request_id, rows, &mut pending_jobs, &job_rx);
-                handle_read_rows(&current, &evt_tx, &mut row_cache, request_id, rows);
+                handle_read_rows(
+                    &current,
+                    &evt_tx,
+                    &mut row_cache,
+                    &mut pending_jobs,
+                    &job_rx,
+                    request_id,
+                    rows,
+                );
             }
             Job::ExportRows {
                 path,
@@ -114,6 +123,31 @@ fn latest_read_rows_job(
     }
 
     latest
+}
+
+fn interrupting_read_rows_job(
+    pending_jobs: &mut VecDeque<Job>,
+    job_rx: &Receiver<Job>,
+) -> Option<Job> {
+    let mut latest = None;
+
+    while matches!(pending_jobs.front(), Some(Job::ReadRows { .. })) {
+        let Some(Job::ReadRows { request_id, rows }) = pending_jobs.pop_front() else {
+            unreachable!();
+        };
+        latest = Some((request_id, rows));
+    }
+
+    while let Ok(job) = job_rx.try_recv() {
+        match job {
+            Job::ReadRows { request_id, rows } => {
+                latest = Some((request_id, rows));
+            }
+            other => pending_jobs.push_back(other),
+        }
+    }
+
+    latest.map(|(request_id, rows)| Job::ReadRows { request_id, rows })
 }
 
 fn spawn_indexer(
@@ -225,6 +259,8 @@ fn handle_read_rows(
     current: &SharedIndex,
     evt_tx: &Sender<Event>,
     row_cache: &mut RowCache,
+    pending_jobs: &mut VecDeque<Job>,
+    job_rx: &Receiver<Job>,
     request_id: u64,
     rows: Vec<(usize, usize)>,
 ) {
@@ -254,18 +290,28 @@ fn handle_read_rows(
         return;
     }
 
-    let mut loaded = Vec::new();
-    if let Ok(rows) = index.read_page(&missing_real, 0, missing_real.len()) {
-        for ((logical_idx, real_row), row) in missing_logical
-            .into_iter()
-            .zip(missing_real.into_iter())
-            .zip(rows.into_iter())
-        {
-            row_cache.insert(real_row, row.clone());
-            loaded.push((logical_idx, row));
+    for (logical_chunk, real_chunk) in missing_logical
+        .chunks(ROW_READ_CHUNK_SIZE)
+        .zip(missing_real.chunks(ROW_READ_CHUNK_SIZE))
+    {
+        let mut loaded = Vec::new();
+        if let Ok(rows) = index.read_page(real_chunk, 0, real_chunk.len()) {
+            for ((logical_idx, real_row), row) in logical_chunk
+                .iter()
+                .copied()
+                .zip(real_chunk.iter().copied())
+                .zip(rows.into_iter())
+            {
+                row_cache.insert(real_row, row.clone());
+                loaded.push((logical_idx, row));
+            }
+        }
+        send_rows_read(evt_tx, request_id, &mut loaded);
+        if let Some(job) = interrupting_read_rows_job(pending_jobs, job_rx) {
+            pending_jobs.push_front(job);
+            return;
         }
     }
-    send_rows_read(evt_tx, request_id, &mut loaded);
 }
 
 fn send_rows_read(evt_tx: &Sender<Event>, request_id: u64, rows: &mut Vec<(usize, Vec<String>)>) {
