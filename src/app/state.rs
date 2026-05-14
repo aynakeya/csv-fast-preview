@@ -29,6 +29,7 @@ pub(crate) struct CsvFastViewApp {
     pub(super) row_request_floor: u64,
     pub(super) requested_range: Option<(usize, usize)>,
     pub(super) scroll_to_row: Option<usize>,
+    pub(super) pending_dropped_path: Option<PathBuf>,
 
     pub(super) visible_columns: Vec<bool>,
     pub(super) column_widths: Vec<f32>,
@@ -72,6 +73,7 @@ impl Default for CsvFastViewApp {
             row_request_floor: 0,
             requested_range: None,
             scroll_to_row: None,
+            pending_dropped_path: None,
             visible_columns: Vec::new(),
             column_widths: Vec::new(),
             filter_column: 0,

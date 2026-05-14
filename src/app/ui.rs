@@ -8,19 +8,38 @@ use super::format::{truncate_cell_text, wrap_header_text};
 use super::state::CsvFastViewApp;
 
 impl eframe::App for CsvFastViewApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !raw_input.dropped_files.is_empty() {
+            if let Some(path) = raw_input
+                .dropped_files
+                .iter()
+                .find_map(|file| file.path.clone())
+            {
+                self.pending_dropped_path = Some(path);
+            } else {
+                self.status = "Dropped file has no filesystem path".to_string();
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(evt) = self.worker.rx.try_recv() {
             self.apply_event(evt);
         }
 
-        if let Some(path) = ctx.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .find_map(|file| file.path.clone())
-        }) {
+        let dropped_path = self.pending_dropped_path.take().or_else(|| {
+            ctx.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .find_map(|file| file.path.clone())
+            })
+        });
+        if let Some(path) = dropped_path {
             self.open_path(path);
         }
+
+        let has_hovered_file = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -410,6 +429,17 @@ impl eframe::App for CsvFastViewApp {
             if !open {
                 self.selected_cell = None;
             }
+        }
+
+        if has_hovered_file {
+            egui::Area::new("drop_file_overlay".into())
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(RichText::new("Drop file to open").strong());
+                    });
+                });
         }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(30));

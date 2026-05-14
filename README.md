@@ -73,6 +73,12 @@ src/
 cargo run
 ```
 
+也可以启动时直接传入文件路径：
+
+```bash
+cargo run -- /path/to/file.csv
+```
+
 打开 CSV：
 
 1. 在 `File` 输入框填入本地 CSV 路径，或点击 `Browse` 选择文件，也可以把文件拖到窗口上直接打开。
