@@ -19,7 +19,6 @@ impl CsvFastViewApp {
                         .page_start
                         .min(self.logical_rows.len().saturating_sub(1));
                     self.jump_to = self.page_start;
-                    self.search_results.clear();
                     self.clear_rows();
                 }
                 Err(err) => self.status = format!("Preview failed: {err}"),
@@ -38,7 +37,6 @@ impl CsvFastViewApp {
                         .page_start
                         .min(self.logical_rows.len().saturating_sub(1));
                     self.jump_to = self.page_start;
-                    self.search_results.clear();
                     self.indexing = true;
                     self.index_progress = Some((0, 0, total_bytes));
                 }
@@ -87,7 +85,6 @@ impl CsvFastViewApp {
                     self.logical_rows = (0..snapshot.row_count).collect();
                     self.page_start = 0;
                     self.jump_to = 0;
-                    self.search_results.clear();
                     self.indexing = false;
                     self.index_progress = None;
                 }
@@ -99,7 +96,6 @@ impl CsvFastViewApp {
             },
             Event::Filtered(result) => match result {
                 Ok(rows) => {
-                    self.search_results = rows.clone();
                     self.logical_rows = rows;
                     self.page_start = 0;
                     self.jump_to = 0;
@@ -132,35 +128,44 @@ impl CsvFastViewApp {
                 self.filter_progress = None;
                 self.status = "Filter cancelled".to_string();
             }
-            Event::Searched(result) => match result {
-                Ok(rows) => {
-                    self.search_results = rows;
-                    self.searching = false;
-                    self.search_progress = None;
-                    self.status = format!("Search done: {} hits", self.search_results.len());
-                }
-                Err(err) => {
-                    self.searching = false;
-                    self.search_progress = None;
-                    self.status = format!("Search failed: {err}");
-                }
-            },
-            Event::SearchProgress { done, total } => {
-                self.searching = true;
-                self.search_progress = Some((done, total));
+            Event::UniqueIndexProgress { col, done, total } => {
+                let state = self.unique_columns.entry(col).or_default();
+                state.indexing = true;
+                state.progress = Some((done, total));
+                state.error = None;
                 self.status = if total > 0 {
                     format!(
-                        "Searching... {done}/{total} ({:.1}%)",
+                        "Indexing unique values for column {col}: {done}/{total} ({:.1}%)",
                         done as f64 * 100.0 / total as f64
                     )
                 } else {
-                    format!("Searching... {done}")
+                    format!("Indexing unique values for column {col}: {done}")
                 };
             }
-            Event::SearchCancelled => {
-                self.searching = false;
-                self.search_progress = None;
-                self.status = "Search cancelled".to_string();
+            Event::UniqueIndexed { col, result } => {
+                let state = self.unique_columns.entry(col).or_default();
+                state.indexing = false;
+                state.progress = None;
+                match result {
+                    Ok(values) => {
+                        let known: std::collections::HashSet<&str> =
+                            values.iter().map(|item| item.value.as_str()).collect();
+                        state
+                            .selected
+                            .retain(|value| known.contains(value.as_str()));
+                        state.values = values;
+                        state.error = None;
+                        self.active_filter_column = Some(col);
+                        self.status = format!(
+                            "Unique index ready for column {col}: {} values",
+                            state.values.len()
+                        );
+                    }
+                    Err(err) => {
+                        state.error = Some(err.clone());
+                        self.status = format!("Unique index failed for column {col}: {err}");
+                    }
+                }
             }
             Event::RowsRead { request_id, rows } => {
                 if request_id >= self.row_request_floor {

@@ -2,17 +2,20 @@ mod config;
 mod index;
 mod query;
 mod sniff;
+mod unique;
 
 pub use config::{CsvConfig, CsvEncoding};
 pub use index::CsvIndex;
 pub use query::FilterMode;
 #[allow(unused_imports)]
 pub use sniff::{CsvSniffResult, sniff_csv, sniff_csv_with_skip};
+pub use unique::UniqueValue;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use encoding_rs::GBK;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -78,6 +81,40 @@ mod tests {
             .filter_rows(0, "", FilterMode::UniqueByValue)
             .expect("unique by value");
         assert_eq!(unique.len(), 2);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn indexes_unique_values_and_filters_multiple_columns() {
+        let path = write_temp_bytes(
+            b"city,kind,value\nshanghai,a,1\nshanghai,b,2\nshenzhen,a,3\nbeijing,a,4\n",
+        );
+        let cfg = CsvConfig::default();
+        let idx = CsvIndex::build(&path, cfg).expect("build index");
+
+        let unique = idx
+            .unique_values_with_progress(0, |_, _| false)
+            .expect("unique values");
+        assert_eq!(
+            unique
+                .iter()
+                .map(|item| (item.value.as_str(), item.count))
+                .collect::<Vec<_>>(),
+            vec![("beijing", 1), ("shanghai", 2), ("shenzhen", 1)]
+        );
+
+        let mut filters = HashMap::new();
+        filters.insert(
+            0,
+            HashSet::from(["shanghai".to_string(), "shenzhen".to_string()]),
+        );
+        filters.insert(1, HashSet::from(["a".to_string()]));
+
+        let rows = idx
+            .filter_by_unique_values_with_progress(&filters, |_, _| false)
+            .expect("apply unique filters");
+        assert_eq!(rows, vec![0, 2]);
 
         let _ = fs::remove_file(path);
     }

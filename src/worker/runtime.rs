@@ -1,4 +1,4 @@
-use crate::core::{CsvIndex, FilterMode};
+use crate::core::CsvIndex;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,7 +17,6 @@ pub(super) fn run_worker(
     job_rx: Receiver<Job>,
     evt_tx: Sender<Event>,
     cancel_filter: Arc<AtomicBool>,
-    cancel_search: Arc<AtomicBool>,
 ) {
     let current: SharedIndex = Arc::new(Mutex::new(None));
     let open_epoch = Arc::new(AtomicU64::new(0));
@@ -65,11 +64,11 @@ pub(super) fn run_worker(
                     config,
                 );
             }
-            Job::Filter { col, keyword, mode } => {
-                handle_filter(&current, &evt_tx, &cancel_filter, col, keyword, mode);
+            Job::IndexUnique { col } => {
+                handle_unique_index(&current, &evt_tx, &cancel_filter, col);
             }
-            Job::Search { keyword } => {
-                handle_search(&current, &evt_tx, &cancel_search, keyword);
+            Job::ApplyUniqueFilters { filters } => {
+                handle_unique_filter(&current, &evt_tx, &cancel_filter, filters);
             }
             Job::ReadRows { request_id, rows } => {
                 let (request_id, rows) =
@@ -201,13 +200,44 @@ fn spawn_indexer(
     });
 }
 
-fn handle_filter(
+fn handle_unique_index(
     current: &SharedIndex,
     evt_tx: &Sender<Event>,
     cancel_filter: &Arc<AtomicBool>,
     col: usize,
-    keyword: String,
-    mode: FilterMode,
+) {
+    let Some(index) = current.lock().expect("current index lock").clone() else {
+        let _ = evt_tx.send(Event::UniqueIndexed {
+            col,
+            result: Err("No CSV opened".to_string()),
+        });
+        return;
+    };
+    cancel_filter.store(false, Ordering::Relaxed);
+    let cancelled = Arc::clone(cancel_filter);
+    let done_flag = Arc::clone(cancel_filter);
+    let evt_tx = evt_tx.clone();
+    thread::spawn(move || {
+        let tx = evt_tx.clone();
+        let result = index
+            .unique_values_with_progress(col, move |done, total| {
+                let _ = tx.send(Event::UniqueIndexProgress { col, done, total });
+                cancelled.load(Ordering::Relaxed)
+            })
+            .map_err(|e| e.to_string());
+        if done_flag.load(Ordering::Relaxed) {
+            let _ = evt_tx.send(Event::FilterCancelled);
+        } else {
+            let _ = evt_tx.send(Event::UniqueIndexed { col, result });
+        }
+    });
+}
+
+fn handle_unique_filter(
+    current: &SharedIndex,
+    evt_tx: &Sender<Event>,
+    cancel_filter: &Arc<AtomicBool>,
+    filters: std::collections::HashMap<usize, std::collections::HashSet<String>>,
 ) {
     let Some(index) = current.lock().expect("current index lock").clone() else {
         let _ = evt_tx.send(Event::Filtered(Err("No CSV opened".to_string())));
@@ -215,44 +245,22 @@ fn handle_filter(
     };
     cancel_filter.store(false, Ordering::Relaxed);
     let cancelled = Arc::clone(cancel_filter);
-    let tx = evt_tx.clone();
-    let result = index
-        .filter_rows_with_progress(col, &keyword, mode, move |done, total| {
-            let _ = tx.send(Event::FilterProgress { done, total });
-            cancelled.load(Ordering::Relaxed)
-        })
-        .map_err(|e| e.to_string());
-    if cancel_filter.load(Ordering::Relaxed) {
-        let _ = evt_tx.send(Event::FilterCancelled);
-    } else {
-        let _ = evt_tx.send(Event::Filtered(result));
-    }
-}
-
-fn handle_search(
-    current: &SharedIndex,
-    evt_tx: &Sender<Event>,
-    cancel_search: &Arc<AtomicBool>,
-    keyword: String,
-) {
-    let Some(index) = current.lock().expect("current index lock").clone() else {
-        let _ = evt_tx.send(Event::Searched(Err("No CSV opened".to_string())));
-        return;
-    };
-    cancel_search.store(false, Ordering::Relaxed);
-    let cancelled = Arc::clone(cancel_search);
-    let tx = evt_tx.clone();
-    let result = index
-        .search_rows_with_progress(&keyword, move |done, total| {
-            let _ = tx.send(Event::SearchProgress { done, total });
-            cancelled.load(Ordering::Relaxed)
-        })
-        .map_err(|e| e.to_string());
-    if cancel_search.load(Ordering::Relaxed) {
-        let _ = evt_tx.send(Event::SearchCancelled);
-    } else {
-        let _ = evt_tx.send(Event::Searched(result));
-    }
+    let done_flag = Arc::clone(cancel_filter);
+    let evt_tx = evt_tx.clone();
+    thread::spawn(move || {
+        let tx = evt_tx.clone();
+        let result = index
+            .filter_by_unique_values_with_progress(&filters, move |done, total| {
+                let _ = tx.send(Event::FilterProgress { done, total });
+                cancelled.load(Ordering::Relaxed)
+            })
+            .map_err(|e| e.to_string());
+        if done_flag.load(Ordering::Relaxed) {
+            let _ = evt_tx.send(Event::FilterCancelled);
+        } else {
+            let _ = evt_tx.send(Event::Filtered(result));
+        }
+    });
 }
 
 fn handle_read_rows(

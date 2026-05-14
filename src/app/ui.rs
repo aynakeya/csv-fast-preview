@@ -1,4 +1,5 @@
-use crate::core::{CsvEncoding, FilterMode, sniff_csv_with_skip};
+use crate::core::CsvEncoding;
+use crate::core::sniff_csv_with_skip;
 use crate::worker::Job;
 use eframe::egui::{self, RichText, ScrollArea, TextEdit};
 use egui_extras::{Column, TableBuilder};
@@ -105,75 +106,42 @@ impl eframe::App for CsvFastViewApp {
 
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Column filter").strong());
-                ui.add(egui::DragValue::new(&mut self.filter_column).range(0..=10_000));
-                ui.add(TextEdit::singleline(&mut self.filter_keyword).hint_text("keyword"));
-                egui::ComboBox::from_label("Mode")
-                    .selected_text(match self.filter_mode {
-                        FilterMode::Contains => "contains",
-                        FilterMode::Equals => "equals",
-                        FilterMode::UniqueByValue => "unique",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.filter_mode,
-                            FilterMode::Contains,
-                            "contains",
-                        );
-                        ui.selectable_value(&mut self.filter_mode, FilterMode::Equals, "equals");
-                        ui.selectable_value(
-                            &mut self.filter_mode,
-                            FilterMode::UniqueByValue,
-                            "unique",
-                        );
-                    });
-
-                if ui.button("Apply Filter").clicked() {
+                if ui
+                    .add_enabled(
+                        self.has_selected_unique_filters(),
+                        egui::Button::new("Apply Filters"),
+                    )
+                    .clicked()
+                {
                     if self.filtering {
-                        self.worker.cancel_filter_now();
+                        self.worker.cancel_query_now();
                     }
-                    self.status = "Filtering in background...".to_string();
+                    self.status = "Applying filters in background...".to_string();
                     self.filtering = true;
                     self.filter_progress = None;
-                    let _ = self.worker.tx.send(Job::Filter {
-                        col: self.filter_column,
-                        keyword: self.filter_keyword.clone(),
-                        mode: self.filter_mode,
+                    let _ = self.worker.tx.send(Job::ApplyUniqueFilters {
+                        filters: self.selected_unique_filters(),
                     });
                 }
                 if ui
-                    .add_enabled(self.filtering, egui::Button::new("Cancel Filter"))
+                    .add_enabled(
+                        self.filtering || self.unique_columns.values().any(|s| s.indexing),
+                        egui::Button::new("Cancel"),
+                    )
                     .clicked()
                 {
-                    self.worker.cancel_filter_now();
+                    self.worker.cancel_query_now();
                 }
 
-                if ui.button("Clear Filter").clicked() {
+                if ui.button("Clear Filters").clicked() {
+                    for state in self.unique_columns.values_mut() {
+                        state.selected.clear();
+                    }
                     self.logical_rows = (0..self.total_rows).collect();
-                    self.search_results.clear();
                     self.page_start = 0;
                     self.jump_to = 0;
                     self.scroll_to_row = Some(0);
                     self.clear_rows();
-                }
-                ui.label("Search");
-                ui.add(TextEdit::singleline(&mut self.search_keyword).desired_width(160.0));
-                if ui.button("Search All Cols").clicked() {
-                    if self.searching {
-                        self.worker.cancel_search_now();
-                    }
-                    self.searching = true;
-                    self.search_progress = None;
-                    self.status = "Searching in background...".to_string();
-                    let _ = self.worker.tx.send(Job::Search {
-                        keyword: self.search_keyword.clone(),
-                    });
-                }
-                if ui
-                    .add_enabled(self.searching, egui::Button::new("Cancel Search"))
-                    .clicked()
-                {
-                    self.worker.cancel_search_now();
                 }
 
                 ui.label("Export");
@@ -190,105 +158,199 @@ impl eframe::App for CsvFastViewApp {
                         visible_columns,
                     });
                 }
-                if ui.button("Export Search Results").clicked() {
-                    let visible_columns = self.visible_column_indices();
-                    self.status = "Exporting search results...".to_string();
-                    let _ = self.worker.tx.send(Job::ExportRows {
-                        path: self.export_path.clone(),
-                        rows: self.search_results.clone(),
-                        visible_columns,
-                    });
-                }
             });
         });
 
-        egui::SidePanel::right("search_results")
-            .min_width(220.0)
+        egui::SidePanel::left("columns")
+            .min_width(300.0)
             .show(ctx, |ui| {
-                ui.label(RichText::new("Search Results").strong());
-                ui.label(format!("count: {}", self.search_results.len()));
-                ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                    let preview_rows: Vec<usize> =
-                        self.search_results.iter().copied().take(200).collect();
-                    for row_idx in preview_rows {
-                        if ui.button(format!("Row {}", row_idx + 1)).clicked() {
-                            if !self.logical_rows.is_empty() {
-                                let pos = self
-                                    .logical_rows
-                                    .iter()
-                                    .position(|r| *r == row_idx)
-                                    .unwrap_or(
-                                        row_idx.min(self.logical_rows.len().saturating_sub(1)),
-                                    );
-                                self.page_start = pos;
-                                self.jump_to = pos;
-                                self.scroll_to_row = Some(pos);
-                            }
-                        }
+                let split_gap = ui.spacing().item_spacing.y;
+                let half_height = (ui.available_height() - split_gap).max(0.0) * 0.5;
+                ui.allocate_ui(egui::vec2(ui.available_width(), half_height), |ui| {
+                    ui.label(RichText::new("Columns").strong());
+                    let row_height = 22.0;
+                    let row_count = self.headers.len();
+                    let content_width = 900.0_f32.max(ui.available_width());
+                    if row_count == 0 {
+                        ui.label("No columns");
+                    } else {
+                        ScrollArea::both()
+                            .id_salt("columns_scroll")
+                            .auto_shrink([false, false])
+                            .show_rows(ui, row_height, row_count, |ui, row_range| {
+                                ui.set_min_width(content_width);
+                                for i in row_range {
+                                    let name = self.headers[i].clone();
+                                    ui.horizontal(|ui| {
+                                        ui.set_min_width(content_width);
+                                        ui.checkbox(&mut self.visible_columns[i], "");
+                                        let response = ui.add(
+                                            egui::Label::new(format!("[{i}] {name}"))
+                                                .extend()
+                                                .selectable(false),
+                                        );
+                                        response.context_menu(|ui| {
+                                            if ui.button("Index unique values").clicked() {
+                                                let state =
+                                                    self.unique_columns.entry(i).or_default();
+                                                state.indexing = true;
+                                                state.progress = None;
+                                                state.error = None;
+                                                self.active_filter_column = Some(i);
+                                                self.status = format!(
+                                                    "Indexing unique values for column {i}..."
+                                                );
+                                                let _ = self
+                                                    .worker
+                                                    .tx
+                                                    .send(Job::IndexUnique { col: i });
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("Show filter values").clicked() {
+                                                self.active_filter_column = Some(i);
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    });
+                                }
+                            });
                     }
                 });
-            });
 
-        egui::SidePanel::left("columns")
-            .min_width(220.0)
-            .show(ctx, |ui| {
-                ui.label(RichText::new("Columns").strong());
-                if !self.headers.is_empty() {
-                    ScrollArea::both()
-                        .id_salt("columns_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            for (i, name) in self.headers.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(&mut self.visible_columns[i], "");
-                                    ui.add(
-                                        egui::Label::new(format!("[{i}] {name}"))
-                                            .extend()
-                                            .selectable(false),
+                ui.separator();
+
+                ui.allocate_ui(
+                    egui::vec2(ui.available_width(), ui.available_height()),
+                    |ui| {
+                        ui.label(RichText::new("Filters").strong());
+                        ui.label(format!("shown rows: {}", self.logical_rows.len()));
+
+                        let mut indexed: Vec<usize> = self.unique_columns.keys().copied().collect();
+                        indexed.sort_unstable();
+                        if indexed.is_empty() {
+                            ui.label("Right-click a column and index unique values.");
+                            return;
+                        }
+
+                        egui::ComboBox::from_label("Column")
+                            .selected_text(
+                                self.active_filter_column
+                                    .and_then(|col| self.headers.get(col).cloned())
+                                    .unwrap_or_else(|| "Select indexed column".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for col in indexed {
+                                    let name = self
+                                        .headers
+                                        .get(col)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("Column {}", col + 1));
+                                    ui.selectable_value(
+                                        &mut self.active_filter_column,
+                                        Some(col),
+                                        format!("[{col}] {name}"),
                                     );
-                                });
+                                }
+                            });
+
+                        let Some(col) = self.active_filter_column else {
+                            return;
+                        };
+                        let Some(state) = self.unique_columns.get_mut(&col) else {
+                            return;
+                        };
+
+                        if let Some((done, total)) = state.progress {
+                            let frac = if total > 0 {
+                                done as f32 / total as f32
+                            } else {
+                                0.0
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(240.0),
+                            );
+                        }
+                        if let Some(err) = &state.error {
+                            ui.label(RichText::new(err).color(egui::Color32::LIGHT_RED));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("All").clicked() {
+                                state.selected.clear();
+                                state
+                                    .selected
+                                    .extend(state.values.iter().map(|item| item.value.clone()));
                             }
+                            if ui.small_button("None").clicked() {
+                                state.selected.clear();
+                            }
+                            ui.label(format!(
+                                "{} selected / {} values",
+                                state.selected.len(),
+                                state.values.len()
+                            ));
                         });
-                }
+
+                        ui.add(
+                            TextEdit::singleline(&mut state.value_filter)
+                                .hint_text("filter values")
+                                .desired_width(260.0),
+                        );
+
+                        let filtered_indices: Vec<usize> = if state.value_filter.is_empty() {
+                            (0..state.values.len()).collect()
+                        } else {
+                            let needle = state.value_filter.to_lowercase();
+                            state
+                                .values
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(idx, item)| {
+                                    if item.value.to_lowercase().contains(&needle) {
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        };
+
+                        ui.label(format!("visible values: {}", filtered_indices.len()));
+                        let bottom_padding =
+                            ui.spacing().scroll.allocated_width() + ui.spacing().item_spacing.y;
+                        let values_height = (ui.available_height() - bottom_padding).max(24.0);
+                        ScrollArea::vertical()
+                            .id_salt(("unique_values", col))
+                            .auto_shrink([false, false])
+                            .max_height(values_height)
+                            .show_rows(ui, 20.0, filtered_indices.len(), |ui, row_range| {
+                                for row in row_range {
+                                    let item = &state.values[filtered_indices[row]];
+                                    let mut checked = state.selected.contains(&item.value);
+                                    ui.horizontal(|ui| {
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked {
+                                                state.selected.insert(item.value.clone());
+                                            } else {
+                                                state.selected.remove(&item.value);
+                                            }
+                                        }
+                                        ui.add(
+                                            egui::Label::new(format!(
+                                                "{} ({})",
+                                                item.value, item.count
+                                            ))
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(&item.value);
+                                    });
+                                }
+                            });
+                    },
+                );
             });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            let total = self.logical_rows.len();
-            ui.horizontal_wrapped(|ui| {
-                ui.label(&self.status);
-                if let Some((done, total)) = self.filter_progress {
-                    ui.separator();
-                    let frac = if total > 0 {
-                        done as f32 / total as f32
-                    } else {
-                        0.0
-                    };
-                    ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(180.0));
-                }
-                if let Some((done, total)) = self.search_progress {
-                    ui.separator();
-                    let frac = if total > 0 {
-                        done as f32 / total as f32
-                    } else {
-                        0.0
-                    };
-                    ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(180.0));
-                }
-                ui.separator();
-                ui.label(format!("file_size: {}", self.file_size_text));
-                ui.separator();
-                ui.label(format!("rows: {total}"));
-                ui.separator();
-                ui.label(format!("row: {}", self.page_start + 1));
-
-                ui.label("jump");
-                ui.add(egui::DragValue::new(&mut self.jump_to).range(0..=usize::MAX));
-                if ui.button("Go").clicked() {
-                    self.page_start = self.jump_to.min(total.saturating_sub(1));
-                    self.jump_to = self.page_start;
-                    self.scroll_to_row = Some(self.page_start);
-                }
-            });
+            self.render_status_bar(ui);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -339,7 +401,7 @@ impl eframe::App for CsvFastViewApp {
                         table = table.scroll_to_row(row, Some(egui::Align::TOP));
                     }
 
-                    let headers = &self.headers;
+                    let headers = self.headers.clone();
                     let mut selected_cell = None;
 
                     table
@@ -353,13 +415,37 @@ impl eframe::App for CsvFastViewApp {
                                     .cloned()
                                     .unwrap_or_else(|| format!("Column {}", col_idx + 1));
                                 header.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(wrap_header_text(&txt)).strong(),
+                                    let response = ui
+                                        .add(
+                                            egui::Label::new(
+                                                RichText::new(wrap_header_text(&txt)).strong(),
+                                            )
+                                            .truncate(),
                                         )
-                                        .truncate(),
-                                    )
-                                    .on_hover_text(txt);
+                                        .on_hover_text(txt);
+                                    response.context_menu(|ui| {
+                                        if ui.button("Index unique values").clicked() {
+                                            let state =
+                                                self.unique_columns.entry(*col_idx).or_default();
+                                            state.indexing = true;
+                                            state.progress = None;
+                                            state.error = None;
+                                            self.active_filter_column = Some(*col_idx);
+                                            self.status = format!(
+                                                "Indexing unique values for column {}...",
+                                                col_idx
+                                            );
+                                            let _ = self
+                                                .worker
+                                                .tx
+                                                .send(Job::IndexUnique { col: *col_idx });
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Show filter values").clicked() {
+                                            self.active_filter_column = Some(*col_idx);
+                                            ui.close_menu();
+                                        }
+                                    });
                                 });
                             }
                             if visible.is_empty() {
@@ -452,7 +538,7 @@ impl eframe::App for CsvFastViewApp {
 
         if self.indexing
             || self.filtering
-            || self.searching
+            || self.unique_columns.values().any(|state| state.indexing)
             || self.requested_range.is_some()
             || has_hovered_file
         {
@@ -460,5 +546,49 @@ impl eframe::App for CsvFastViewApp {
         } else if had_worker_event {
             ctx.request_repaint();
         }
+    }
+}
+
+impl CsvFastViewApp {
+    fn render_status_bar(&mut self, ui: &mut egui::Ui) {
+        let total = self.logical_rows.len();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(&self.status);
+            if let Some((done, total)) = self.filter_progress {
+                ui.separator();
+                let frac = if total > 0 {
+                    done as f32 / total as f32
+                } else {
+                    0.0
+                };
+                ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(180.0));
+            }
+            for (col, state) in &self.unique_columns {
+                if let Some((done, total)) = state.progress {
+                    ui.separator();
+                    let frac = if total > 0 {
+                        done as f32 / total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.label(format!("unique col {col}"));
+                    ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(120.0));
+                }
+            }
+            ui.separator();
+            ui.label(format!("file_size: {}", self.file_size_text));
+            ui.separator();
+            ui.label(format!("rows: {total}"));
+            ui.separator();
+            ui.label(format!("row: {}", self.page_start + 1));
+
+            ui.label("jump");
+            ui.add(egui::DragValue::new(&mut self.jump_to).range(0..=usize::MAX));
+            if ui.button("Go").clicked() {
+                self.page_start = self.jump_to.min(total.saturating_sub(1));
+                self.jump_to = self.page_start;
+                self.scroll_to_row = Some(self.page_start);
+            }
+        });
     }
 }

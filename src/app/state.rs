@@ -1,6 +1,6 @@
-use crate::core::{CsvConfig, CsvEncoding, FilterMode};
+use crate::core::{CsvConfig, CsvEncoding, UniqueValue};
 use crate::worker::{Job, Worker};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use super::constants::{ROW_CACHE_AFTER, ROW_CACHE_BEFORE, ROW_CACHE_LIMIT};
@@ -34,18 +34,23 @@ pub(crate) struct CsvFastViewApp {
     pub(super) visible_columns: Vec<bool>,
     pub(super) column_widths: Vec<f32>,
 
-    pub(super) filter_column: usize,
-    pub(super) filter_keyword: String,
-    pub(super) filter_mode: FilterMode,
     pub(super) filtering: bool,
     pub(super) filter_progress: Option<(usize, usize)>,
+    pub(super) unique_columns: HashMap<usize, UniqueColumnState>,
+    pub(super) active_filter_column: Option<usize>,
     pub(super) indexing: bool,
     pub(super) index_progress: Option<(usize, u64, u64)>,
-    pub(super) search_keyword: String,
-    pub(super) searching: bool,
-    pub(super) search_progress: Option<(usize, usize)>,
-    pub(super) search_results: Vec<usize>,
     pub(super) selected_cell: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct UniqueColumnState {
+    pub values: Vec<UniqueValue>,
+    pub selected: HashSet<String>,
+    pub indexing: bool,
+    pub progress: Option<(usize, usize)>,
+    pub error: Option<String>,
+    pub value_filter: String,
 }
 
 impl Default for CsvFastViewApp {
@@ -76,17 +81,12 @@ impl Default for CsvFastViewApp {
             pending_dropped_path: None,
             visible_columns: Vec::new(),
             column_widths: Vec::new(),
-            filter_column: 0,
-            filter_keyword: String::new(),
-            filter_mode: FilterMode::Contains,
             filtering: false,
             filter_progress: None,
+            unique_columns: HashMap::new(),
+            active_filter_column: None,
             indexing: false,
             index_progress: None,
-            search_keyword: String::new(),
-            searching: false,
-            search_progress: None,
-            search_results: Vec::new(),
             selected_cell: None,
         }
     }
@@ -120,6 +120,8 @@ impl CsvFastViewApp {
         self.indexing = true;
         self.index_progress = None;
         self.clear_rows();
+        self.unique_columns.clear();
+        self.active_filter_column = None;
         let _ = self.worker.tx.send(Job::OpenFile {
             path: self.path.clone(),
             config: cfg,
@@ -195,5 +197,24 @@ impl CsvFastViewApp {
             .enumerate()
             .filter_map(|(i, v)| if *v { Some(i) } else { None })
             .collect()
+    }
+
+    pub(super) fn selected_unique_filters(&self) -> HashMap<usize, HashSet<String>> {
+        self.unique_columns
+            .iter()
+            .filter_map(|(col, state)| {
+                if state.selected.is_empty() || state.selected.len() == state.values.len() {
+                    None
+                } else {
+                    Some((*col, state.selected.clone()))
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn has_selected_unique_filters(&self) -> bool {
+        self.unique_columns
+            .values()
+            .any(|state| !state.selected.is_empty())
     }
 }

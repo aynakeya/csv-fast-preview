@@ -1,4 +1,5 @@
-use crate::core::{CsvConfig, FilterMode};
+use crate::core::{CsvConfig, UniqueValue};
+use std::collections::{HashMap, HashSet};
 
 use super::snapshot::CsvSnapshot;
 
@@ -7,13 +8,11 @@ pub enum Job {
         path: String,
         config: CsvConfig,
     },
-    Filter {
+    IndexUnique {
         col: usize,
-        keyword: String,
-        mode: FilterMode,
     },
-    Search {
-        keyword: String,
+    ApplyUniqueFilters {
+        filters: HashMap<usize, HashSet<String>>,
     },
     ReadRows {
         request_id: u64,
@@ -49,10 +48,13 @@ pub enum Event {
         total: usize,
     },
     FilterCancelled,
-    Searched(Result<Vec<usize>, String>),
-    SearchProgress {
+    UniqueIndexed {
+        col: usize,
+        result: Result<Vec<UniqueValue>, String>,
+    },
+    UniqueIndexProgress {
+        col: usize,
         done: usize,
         total: usize,
     },
-    SearchCancelled,
 }

@@ -16,7 +16,6 @@ pub struct Worker {
     pub tx: Sender<Job>,
     pub rx: Receiver<Event>,
     cancel_filter: Arc<AtomicBool>,
-    cancel_search: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -24,19 +23,16 @@ impl Worker {
         let (job_tx, job_rx) = unbounded::<Job>();
         let (evt_tx, evt_rx) = unbounded::<Event>();
         let cancel_filter = Arc::new(AtomicBool::new(false));
-        let cancel_search = Arc::new(AtomicBool::new(false));
 
         thread::spawn({
             let cancel_filter = Arc::clone(&cancel_filter);
-            let cancel_search = Arc::clone(&cancel_search);
-            move || runtime::run_worker(job_rx, evt_tx, cancel_filter, cancel_search)
+            move || runtime::run_worker(job_rx, evt_tx, cancel_filter)
         });
 
         Self {
             tx: job_tx,
             rx: evt_rx,
             cancel_filter,
-            cancel_search,
         }
     }
 
@@ -44,7 +40,7 @@ impl Worker {
         self.cancel_filter.store(true, Ordering::Relaxed);
     }
 
-    pub fn cancel_search_now(&self) {
-        self.cancel_search.store(true, Ordering::Relaxed);
+    pub fn cancel_query_now(&self) {
+        self.cancel_filter.store(true, Ordering::Relaxed);
     }
 }
