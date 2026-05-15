@@ -30,10 +30,10 @@ pub(super) fn install_cjk_fallback(ctx: &Context) {
 }
 
 fn find_cjk_font() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("CSVFASTVIEW_FONT").map(PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
+    if let Some(path) = std::env::var_os("CSVFASTVIEW_FONT").map(PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
     }
 
     cjk_font_candidates()

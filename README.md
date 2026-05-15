@@ -118,10 +118,10 @@ CSVFASTVIEW_PIXELS_PER_POINT=1.0 cargo run --release
 筛选：
 
 - 在左侧 `Columns` 列表或表头上右键，选择 `Index unique values`，worker 会在后台扫描该列并生成唯一值列表。
-- 右侧 `Filters` 面板显示已索引列的唯一值和每个值的出现次数。
+- 左侧 `Filters` 面板显示已索引列的唯一值和每个值的出现次数。
 - 可以对一个列勾选多个值，也可以对多个已索引列分别勾选值，然后点击 `Apply Filters`。
 - 多列筛选使用 AND 语义：每一行必须同时满足所有已选择列的值集合。
-- `Cancel` 可以取消正在执行的 unique 索引或筛选任务；底部状态栏和右侧面板会显示进度。
+- `Cancel` 可以取消正在执行的 unique 索引或筛选任务；底部状态栏和左侧面板会显示进度。
 - `Clear Filters` 会清空所有勾选值并恢复显示全部已索引行。
 
 导出：
@@ -150,16 +150,30 @@ cargo run --bin bench -- /path/to/large.csv , utf8 0 keyword
 - `shift-jis`
 - `iso-8859-1`
 
+benchmark 会输出：
+
+- `preview_first_ms`: 打开预览前 200 行耗时。
+- `index_ms`: 构建全量行 byte offset 索引耗时。
+- `filter_contains_ms`: 旧的 contains 扫描查询耗时。
+- `unique_index_ms`: 构建指定列 unique index 耗时。
+- `visible_read_ms`: 模拟远跳拖动后读取可见列窗口的耗时。
+- `maxrss_kb`: 使用 `/usr/bin/time` 包裹运行时可得到进程峰值 RSS。
+
 ## 大文件行为说明
 
 - 内存中主要保存行 byte offset，而不是完整表格。
-- GUI 层按当前位置维护有限行内容缓存，默认缓存当前位置上方约 2500 行、下方约 4500 行，最大约 8000 行。
-- worker 层有独立行缓存，用于减少快速滚动时的重复 seek/read。
+- GUI 层按当前位置维护有限行内容缓存，默认请求当前位置上方约 400 行、下方约 900 行，最大缓存约 2000 行。
+- GUI 行缓存使用轻量 LRU，快速往返滚动时会保留最近访问的行。
+- worker 不缓存单元格内容，只合并过时读取请求，并复用当前 CSV 的只读文件句柄。
+- 表格横向和纵向都只渲染当前视口附近内容；读取时只解码当前可见列。
 - indexing 期间会持续更新已索引行数，已索引出的行可以被 GUI 请求显示。
 - 快速拖动到远处时，worker 会合并过时的读行请求，优先处理最新位置，避免后台堆积无效读取。
 - 尚未读入 GUI 缓存的行会显示轻量占位，worker 返回后替换为真实内容。
+- unique 筛选基于已构建的 unique index，不会在每次 `Apply Filters` 时重新扫描 CSV。
+- 大范围 include/exclude 会自动选择更小的一侧保存，避免 filter 后把接近全量的行号全部放进内存。
 
 ## 已知限制
 
-- unique 值索引和筛选仍是全文件扫描，大文件下需要时间，但执行在 worker 中，不阻塞 GUI。
+- unique 值索引需要扫描对应列一次，大文件下需要时间，但执行在 worker 中，不阻塞 GUI。
+- contains 查询 benchmark 仍是全文件扫描路径，GUI 的值筛选使用 unique index 路径。
 - 暂无持久化用户设置。

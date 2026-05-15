@@ -1,4 +1,4 @@
-use crate::worker::Event;
+use crate::worker::{Event, FilterRows};
 
 use super::format::format_bytes;
 use super::state::CsvFastViewApp;
@@ -14,7 +14,7 @@ impl CsvFastViewApp {
                     );
                     self.apply_headers(snapshot.headers);
                     self.total_rows = snapshot.row_count;
-                    self.logical_rows = (0..snapshot.row_count).collect();
+                    self.set_all_rows(snapshot.row_count);
                     self.page_start = self
                         .page_start
                         .min(self.logical_rows.len().saturating_sub(1));
@@ -29,9 +29,8 @@ impl CsvFastViewApp {
                     self.status = format!("Indexing... {visible_rows} rows");
                     self.apply_headers(snapshot.headers);
                     self.total_rows = visible_rows;
-                    if self.logical_rows.len() < visible_rows {
-                        self.logical_rows
-                            .extend(self.logical_rows.len()..visible_rows);
+                    if self.logical_rows.is_all() {
+                        self.set_all_rows(visible_rows);
                     }
                     self.page_start = self
                         .page_start
@@ -51,13 +50,9 @@ impl CsvFastViewApp {
                 bytes,
                 total_bytes,
             } => {
-                let old_len = self.total_rows;
                 self.total_rows = indexed_rows;
-                if self.logical_rows.len() == old_len {
-                    self.logical_rows.extend(old_len..indexed_rows);
-                } else if self.logical_rows.len() < indexed_rows {
-                    self.logical_rows = (0..indexed_rows).collect();
-                    self.clear_rows();
+                if self.logical_rows.is_all() {
+                    self.set_all_rows(indexed_rows);
                 }
                 self.indexing = true;
                 self.index_progress = Some((indexed_rows, bytes, total_bytes));
@@ -82,7 +77,7 @@ impl CsvFastViewApp {
                     );
                     self.apply_headers(snapshot.headers);
                     self.total_rows = snapshot.row_count;
-                    self.logical_rows = (0..snapshot.row_count).collect();
+                    self.set_all_rows(snapshot.row_count);
                     self.page_start = 0;
                     self.jump_to = 0;
                     self.indexing = false;
@@ -95,13 +90,34 @@ impl CsvFastViewApp {
                 }
             },
             Event::Filtered(result) => match result {
-                Ok(rows) => {
-                    self.logical_rows = rows;
+                Ok(FilterRows::All(len)) => {
+                    self.set_all_rows(len);
                     self.page_start = 0;
                     self.jump_to = 0;
                     self.scroll_to_row = Some(0);
                     self.clear_rows();
                     self.status = format!("Filter done: {} rows", self.logical_rows.len());
+                    self.filtering = false;
+                    self.filter_progress = None;
+                }
+                Ok(FilterRows::AllExcept { total, excluded }) => {
+                    self.set_all_except_rows(total, excluded);
+                    self.page_start = 0;
+                    self.jump_to = 0;
+                    self.scroll_to_row = Some(0);
+                    self.clear_rows();
+                    self.status = format!("Filter done: {} rows", self.logical_rows.len());
+                    self.filtering = false;
+                    self.filter_progress = None;
+                }
+                Ok(FilterRows::Rows(rows)) => {
+                    let row_count = rows.len();
+                    self.set_filtered_rows(rows);
+                    self.page_start = 0;
+                    self.jump_to = 0;
+                    self.scroll_to_row = Some(0);
+                    self.clear_rows();
+                    self.status = format!("Filter done: {row_count} rows");
                     self.filtering = false;
                     self.filter_progress = None;
                 }
@@ -153,7 +169,16 @@ impl CsvFastViewApp {
                         state
                             .selected
                             .retain(|value| known.contains(value.as_str()));
+                        state
+                            .excluded
+                            .retain(|value| known.contains(value.as_str()));
+                        if values.is_empty() {
+                            state.all_selected = false;
+                        }
                         state.values = values;
+                        state.cached_value_filter.clear();
+                        state.cached_filter_value_count = 0;
+                        state.cached_filtered_indices.clear();
                         state.error = None;
                         self.active_filter_column = Some(col);
                         self.status = format!(
@@ -168,9 +193,9 @@ impl CsvFastViewApp {
                 }
             }
             Event::RowsRead { request_id, rows } => {
-                if request_id >= self.row_request_floor {
-                    for (logical_idx, row) in rows {
-                        self.insert_loaded_row(logical_idx, row);
+                if request_id == self.row_request_id && request_id >= self.row_request_floor {
+                    for (logical_idx, cells) in rows {
+                        self.insert_loaded_cells(logical_idx, cells);
                     }
                 }
             }
@@ -190,7 +215,38 @@ impl CsvFastViewApp {
         if self.visible_columns.len() != headers.len() {
             self.visible_columns = vec![true; headers.len()];
             self.column_widths = vec![120.0; headers.len()];
+            self.mark_column_layout_dirty();
         }
         self.headers = headers;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worker::Event;
+
+    #[test]
+    fn stale_row_reads_do_not_pollute_current_cache() {
+        let mut app = CsvFastViewApp {
+            row_request_floor: 1,
+            row_request_id: 2,
+            ..CsvFastViewApp::default()
+        };
+
+        app.apply_event(Event::RowsRead {
+            request_id: 1,
+            rows: vec![(5, vec![(0, "old".to_string())])],
+        });
+        assert!(!app.row_cache.contains_key(&5));
+
+        app.apply_event(Event::RowsRead {
+            request_id: 2,
+            rows: vec![(6, vec![(0, "new".to_string())])],
+        });
+        assert_eq!(
+            app.row_cache.get(&6).and_then(|row| row.get(0)),
+            Some("new")
+        );
     }
 }

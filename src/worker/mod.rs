@@ -1,6 +1,5 @@
 mod export;
 mod message;
-mod row_cache;
 mod runtime;
 mod snapshot;
 
@@ -9,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-pub use message::{Event, Job};
+pub use message::{Event, FilterRows, Job, UniqueFilter};
 pub use snapshot::CsvSnapshot;
 
 pub struct Worker {

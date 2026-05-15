@@ -5,17 +5,16 @@ mod sniff;
 mod unique;
 
 pub use config::{CsvConfig, CsvEncoding};
-pub use index::CsvIndex;
+pub use index::{CsvIndex, CsvReadPlan};
 pub use query::FilterMode;
 #[allow(unused_imports)]
 pub use sniff::{CsvSniffResult, sniff_csv, sniff_csv_with_skip};
-pub use unique::UniqueValue;
+pub use unique::{UniqueColumnIndex, UniqueValue};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use encoding_rs::GBK;
-    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -54,6 +53,57 @@ mod tests {
         let rows = idx.read_page(&idx.all_rows(), 0, 2).expect("read page");
         assert_eq!(rows[0][0], "anna");
         assert_eq!(rows[1][1], "20");
+
+        let cells = idx
+            .read_page_columns(&idx.all_rows(), &[1], 0, 2)
+            .expect("read visible columns");
+        assert_eq!(cells[0], vec![(1, "18".to_string())]);
+        assert_eq!(cells[1], vec![(1, "20".to_string())]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_selected_columns_from_mixed_consecutive_row_runs() {
+        let path = write_temp_bytes(b"name,age\nanna,18\nbob,20\ncyd,22\ndee,24\neli,26\n");
+        let cfg = CsvConfig::default();
+        let idx = CsvIndex::build(&path, cfg).expect("build index");
+
+        let cells = idx
+            .read_page_columns(&[0, 1, 3, 4], &[0, 1], 0, 4)
+            .expect("read visible columns");
+
+        assert_eq!(
+            cells,
+            vec![
+                vec![(0, "anna".to_string()), (1, "18".to_string())],
+                vec![(0, "bob".to_string()), (1, "20".to_string())],
+                vec![(0, "dee".to_string()), (1, "24".to_string())],
+                vec![(0, "eli".to_string()), (1, "26".to_string())],
+            ]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_plan_reuses_file_for_chunked_column_ranges() {
+        let path = write_temp_bytes(b"name,age\nanna,18\nbob,20\ncyd,22\ndee,24\neli,26\n");
+        let cfg = CsvConfig::default();
+        let idx = CsvIndex::build(&path, cfg).expect("build index");
+        let plan = idx.read_plan(&[0, 1, 3, 4]);
+
+        let all = plan.read_columns(&[0, 1]).expect("read all columns");
+        let mut file = plan.open_file().expect("open plan file");
+        let mut chunked = plan
+            .read_columns_range_with_file(&mut file, &[0, 1], 0, 2)
+            .expect("read first chunk");
+        chunked.extend(
+            plan.read_columns_range_with_file(&mut file, &[0, 1], 2, 4)
+                .expect("read second chunk"),
+        );
+
+        assert_eq!(chunked, all);
 
         let _ = fs::remove_file(path);
     }
@@ -104,17 +154,19 @@ mod tests {
             vec![("beijing", 1), ("shanghai", 2), ("shenzhen", 1)]
         );
 
-        let mut filters = HashMap::new();
-        filters.insert(
-            0,
-            HashSet::from(["shanghai".to_string(), "shenzhen".to_string()]),
+        let unique_index = idx
+            .index_unique_values_with_progress(0, |_, _| false)
+            .expect("unique index");
+        let shanghai_idx = unique_index
+            .values
+            .binary_search_by(|item| item.value.as_str().cmp("shanghai"))
+            .expect("shanghai index");
+        assert_eq!(
+            unique_index
+                .rows_for_value_index(shanghai_idx)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
         );
-        filters.insert(1, HashSet::from(["a".to_string()]));
-
-        let rows = idx
-            .filter_by_unique_values_with_progress(&filters, |_, _| false)
-            .expect("apply unique filters");
-        assert_eq!(rows, vec![0, 2]);
 
         let _ = fs::remove_file(path);
     }

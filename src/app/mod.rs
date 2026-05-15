@@ -15,12 +15,11 @@ pub fn run(initial_path: Option<PathBuf>) -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             fonts::install_cjk_fallback(&cc.egui_ctx);
-            if let Ok(value) = std::env::var("CSVFASTVIEW_PIXELS_PER_POINT") {
-                if let Ok(value) = value.parse::<f32>() {
-                    if value > 0.0 {
-                        cc.egui_ctx.set_pixels_per_point(value);
-                    }
-                }
+            if let Ok(value) = std::env::var("CSVFASTVIEW_PIXELS_PER_POINT")
+                && let Ok(value) = value.parse::<f32>()
+                && value > 0.0
+            {
+                cc.egui_ctx.set_pixels_per_point(value);
             }
             let mut app = CsvFastViewApp::default();
             if let Some(path) = initial_path {

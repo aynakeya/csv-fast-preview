@@ -1,7 +1,19 @@
 use crate::core::{CsvConfig, UniqueValue};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::snapshot::CsvSnapshot;
+
+pub enum FilterRows {
+    All(usize),
+    AllExcept { total: usize, excluded: Vec<usize> },
+    Rows(Vec<usize>),
+}
+
+pub enum UniqueFilter {
+    Include(HashSet<String>),
+    Exclude(HashSet<String>),
+}
 
 pub enum Job {
     OpenFile {
@@ -12,11 +24,12 @@ pub enum Job {
         col: usize,
     },
     ApplyUniqueFilters {
-        filters: HashMap<usize, HashSet<String>>,
+        filters: HashMap<usize, UniqueFilter>,
     },
     ReadRows {
         request_id: u64,
         rows: Vec<(usize, usize)>,
+        columns: Vec<usize>,
     },
     ExportRows {
         path: String,
@@ -36,13 +49,13 @@ pub enum Event {
     Opened(Result<CsvSnapshot, String>),
     RowsRead {
         request_id: u64,
-        rows: Vec<(usize, Vec<String>)>,
+        rows: Vec<(usize, Vec<(usize, String)>)>,
     },
     RowsReadDone {
         request_id: u64,
     },
     Exported(Result<String, String>),
-    Filtered(Result<Vec<usize>, String>),
+    Filtered(Result<FilterRows, String>),
     FilterProgress {
         done: usize,
         total: usize,
@@ -50,7 +63,7 @@ pub enum Event {
     FilterCancelled,
     UniqueIndexed {
         col: usize,
-        result: Result<Vec<UniqueValue>, String>,
+        result: Result<Arc<[UniqueValue]>, String>,
     },
     UniqueIndexProgress {
         col: usize,
